@@ -1,6 +1,6 @@
 {
   "name": "@arisechurch/json-to-mysql",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": false,
   "description": "Convert an array of JSON values to MySQL statements",
   "main": "dist/main.js",
