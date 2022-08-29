@@ -117,7 +117,7 @@ export const schema = ({
           (type): SchemaKind =>
             type === "VARCHAR(255)" && hasLongText(name, sampleSlice)
               ? "TEXT"
-              : "VARCHAR(255)"
+              : type
         ),
         O.fold(
           () => [],
