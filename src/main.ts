@@ -4,125 +4,177 @@ import * as Arr from "fp-ts/Array";
 import * as Sql from "sqlstring";
 import { DateTime } from "luxon";
 
-export type TContextFields = {
-  timeFields: string[];
-  dateFields: string[];
-};
+const isNullable = (key: string, rows: any[]) =>
+  rows.some((row) => row[key] == null);
 
-const isNullable = (key: string, rows: any[], samples = 200) =>
-  rows.slice(0, samples).some((row) => row[key] == null);
-
-const firstSample = (key: string, rows: any[], samples = 200) =>
+const firstSample = (key: string, rows: any[]) =>
   F.pipe(
-    rows.slice(0, samples),
+    rows,
     Arr.findFirst((row) => row[key] != null),
     O.map((row) => row[key])
   );
 
 const mysqlType =
-  ({ timeFields, dateFields }: TContextFields) =>
+  ({ timeFields, dateFields }: Pick<SchemaOpts, "dateFields" | "timeFields">) =>
   (key: string) =>
-  (value: any): O.Option<string> => {
+  (value: any): SchemaKind => {
     if (timeFields.includes(key)) {
-      return O.some("DATETIME");
-    }
-    if (dateFields.includes(key)) {
-      return O.some("DATE");
+      return "DATETIME";
+    } else if (dateFields.includes(key)) {
+      return "DATE";
     } else if (typeof value === "string") {
-      return O.some("VARCHAR(255)");
+      return "VARCHAR(255)";
     } else if (typeof value === "number") {
-      return O.some("INT");
+      return "INT";
     } else if (typeof value === "boolean") {
-      return O.some("BOOLEAN");
+      return "BOOLEAN";
     }
 
-    return O.none;
+    return "JSON";
   };
 
-export interface SchemaFromSamplesOptions {
+export interface SchemaOpts {
   name: string;
+  timeFields: string[];
+  dateFields: string[];
   rows: any[];
   samples?: number;
+  allowJson?: boolean;
 }
 
-export const schemaFromSamples =
-  (ctx: TContextFields) =>
-  ({ name, rows, samples = 200 }: SchemaFromSamplesOptions) => {
-    const columns = Object.keys(rows[0]);
-    const hasID = columns.includes("id");
-    const getType = mysqlType(ctx);
+function shuffle<T>(input: T[]) {
+  const array = [...input];
 
-    const clauses = columns.reduce<string[]>(
-      (clauses, name) =>
-        F.pipe(
-          firstSample(name, rows, samples),
-          O.chain(getType(name)),
-          O.map((type) =>
-            isNullable(name, rows, samples)
-              ? `${name} ${type}`
-              : `${name} ${type} NOT NULL`
-          ),
-          O.fold(
-            () => clauses,
-            (clause) => [...clauses, clause]
-          )
-        ),
-      []
-    );
+  let currentIndex = array.length,
+    randomIndex;
 
-    if (hasID) {
-      clauses.push("PRIMARY KEY (id)");
-    }
+  // While there remain elements to shuffle.
+  while (currentIndex != 0) {
+    // Pick a remaining element.
+    randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
 
-    return Sql.format(
-      `CREATE TABLE ?? (
-    ${clauses.join(",\n")}
-  );`,
-      [name]
-    );
-  };
+    // And swap it with the current element.
+    [array[currentIndex], array[randomIndex]] = [
+      array[randomIndex],
+      array[currentIndex],
+    ];
+  }
 
-const valueForRow =
-  ({ timeFields, dateFields }: TContextFields) =>
-  (row: any) =>
-  (column: string) => {
-    const value = row[column];
-    if (timeFields.includes(column)) {
-      return F.pipe(
-        O.fromNullable(value as DateTime),
-        O.map((d) => d.toSQL()),
-        O.toNullable
-      );
-    } else if (dateFields.includes(column)) {
-      return F.pipe(
-        O.fromNullable(value as DateTime),
-        O.map((d) => d.toUTC().toSQLDate()),
-        O.toNullable
-      );
-    }
+  return array;
+}
 
-    return value;
-  };
+export type SchemaKind =
+  | "DATETIME"
+  | "DATE"
+  | "VARCHAR(255)"
+  | "INT"
+  | "BOOLEAN"
+  | "JSON";
 
-const valuesForRow = (ctx: TContextFields) => (columns: string[]) => {
-  const placeholders = columns.map(() => "?").join(", ");
-  const getValue = valueForRow(ctx);
-  return (row: any) =>
-    Sql.format(`(${placeholders})`, columns.map(getValue(row)));
+export interface SchemaField {
+  name: string;
+  kind: SchemaKind;
+  nullable: boolean;
+}
+
+export interface Schema {
+  name: string;
+  fields: SchemaField[];
+}
+
+export const schema = ({
+  name,
+  rows,
+  samples = 500,
+  dateFields,
+  timeFields,
+  allowJson = false,
+}: SchemaOpts): Schema => {
+  const sampleSlice = shuffle(rows).slice(0, samples);
+  const columns = [...new Set(sampleSlice.flatMap((row) => Object.keys(row)))];
+  const getType = mysqlType({ dateFields, timeFields });
+
+  const fields = columns.flatMap((name) =>
+    F.pipe(
+      F.pipe(
+        firstSample(name, sampleSlice),
+        O.map(getType(name)),
+        O.filter((type) => type !== "JSON" || allowJson),
+        O.fold(
+          () => [],
+          (kind) => [
+            {
+              name,
+              kind,
+              nullable: isNullable(name, sampleSlice),
+            },
+          ]
+        )
+      )
+    )
+  );
+
+  return { name, fields };
 };
 
-export const insertMany =
-  (ctx: TContextFields) => (table: string, rows: any[]) => {
-    const columns = Object.keys(rows[0]);
-    const values = rows.map(valuesForRow(ctx)(columns));
+export const createTable = ({ name, fields }: Schema) => {
+  const hasID = fields.some((f) => f.name === "id");
+  const clauses = fields.map((f) =>
+    Sql.format(`?? ${f.kind}${f.nullable ? "" : " NOT NULL"}`, [f.name])
+  );
 
-    return Sql.format(
-      `INSERT INTO ?? (${columns
-        .map(() => "??")
-        .join(", ")}) VALUES ${values.join(",\n")};`,
-      [table, ...columns]
+  if (hasID) {
+    clauses.push("PRIMARY KEY (id)");
+  }
+
+  return Sql.format(
+    `CREATE TABLE ?? (
+    ${clauses.join(",\n")}
+  );`,
+    [name]
+  );
+};
+
+const valueForRow = (row: any) => (field: SchemaField) => {
+  const value = row[field.name];
+
+  if (field.kind === "DATETIME") {
+    return F.pipe(
+      O.fromNullable(value as DateTime),
+      O.map((d) => d.toSQL()),
+      O.toNullable
     );
-  };
+  } else if (field.kind === "DATE") {
+    return F.pipe(
+      O.fromNullable(value as DateTime),
+      O.map((d) => d.toUTC().toSQLDate()),
+      O.toNullable
+    );
+  } else if (field.kind === "JSON") {
+    return JSON.stringify(value);
+  }
+
+  return value;
+};
+
+const valuesForRow = (schema: Schema) => {
+  const placeholders = schema.fields.map(() => "?").join(", ");
+  return (row: any) =>
+    Sql.format(`(${placeholders})`, schema.fields.map(valueForRow(row)));
+};
+
+export const insertMany = (schema: Schema) => (rows: any[]) => {
+  const columns = schema.fields.map((f) => f.name);
+  const values = rows.map(valuesForRow(schema));
+
+  return Sql.format(
+    `INSERT INTO ?? (${columns
+      .map(() => "??")
+      .join(", ")}) VALUES ${values.join(",\n")};`,
+    [schema.name, ...columns]
+  );
+};
 
 export const dropTable = (table: string) =>
   Sql.format(`DROP TABLE IF EXISTS ??;`, [table]);
