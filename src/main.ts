@@ -26,7 +26,10 @@ const hasLongText = (key: string, rows: any[]) =>
   });
 
 const mysqlType =
-  ({ timeFields, dateFields }: Pick<SchemaOpts, "dateFields" | "timeFields">) =>
+  ({
+    timeFields,
+    dateFields,
+  }: Required<Pick<SchemaOpts, "dateFields" | "timeFields">>) =>
   (key: string) =>
   (value: any): SchemaKind => {
     if (timeFields.includes(key)) {
@@ -46,11 +49,12 @@ const mysqlType =
 
 export interface SchemaOpts {
   name: string;
-  timeFields: string[];
-  dateFields: string[];
-  rows: any[];
   samples?: number;
+  timeZone?: string;
+  timeFields?: string[];
+  dateFields?: string[];
   allowJson?: boolean;
+  rows: any[];
 }
 
 function shuffle<T>(input: T[]) {
@@ -92,6 +96,7 @@ export interface SchemaField {
 
 export interface Schema {
   name: string;
+  timeZone: string;
   fields: SchemaField[];
 }
 
@@ -99,9 +104,10 @@ export const schema = ({
   name,
   rows,
   samples = 500,
-  dateFields,
-  timeFields,
+  dateFields = [],
+  timeFields = [],
   allowJson = false,
+  timeZone = "UTC",
 }: SchemaOpts): Schema => {
   const sampleSlice = shuffle(rows).slice(0, samples);
   const columns = [...new Set(sampleSlice.flatMap((row) => Object.keys(row)))];
@@ -133,7 +139,7 @@ export const schema = ({
     )
   );
 
-  return { name, fields };
+  return { name, fields, timeZone };
 };
 
 export const createTable = ({ name, fields }: Schema) => {
@@ -154,19 +160,19 @@ export const createTable = ({ name, fields }: Schema) => {
   );
 };
 
-const valueForRow = (row: any) => (field: SchemaField) => {
+const valueForRow = (schema: Schema) => (row: any) => (field: SchemaField) => {
   const value = row[field.name];
 
   if (field.kind === "DATETIME") {
     return F.pipe(
-      O.fromNullable(value as DateTime),
+      parseDateTime(value, schema.timeZone),
       O.map((d) => d.toSQL()),
       O.toNullable
     );
   } else if (field.kind === "DATE") {
     return F.pipe(
-      O.fromNullable(value as DateTime),
-      O.map((d) => d.toUTC().toSQLDate()),
+      parseDateTime(value, "UTC"),
+      O.map((d) => d.toSQLDate()),
       O.toNullable
     );
   } else if (field.kind === "JSON") {
@@ -177,9 +183,11 @@ const valueForRow = (row: any) => (field: SchemaField) => {
 };
 
 const valuesForRow = (schema: Schema) => {
+  const getValue = valueForRow(schema);
   const placeholders = schema.fields.map(() => "?").join(", ");
+
   return (row: any) =>
-    Sql.format(`(${placeholders})`, schema.fields.map(valueForRow(row)));
+    Sql.format(`(${placeholders})`, schema.fields.map(getValue(row)));
 };
 
 export const insertMany = (schema: Schema) => (rows: any[]) => {
@@ -196,3 +204,10 @@ export const insertMany = (schema: Schema) => (rows: any[]) => {
 
 export const dropTable = (table: string) =>
   Sql.format(`DROP TABLE IF EXISTS ??;`, [table]);
+
+const parseDateTime = (s: string, zone: string) =>
+  F.pipe(
+    O.fromNullable(DateTime.fromSQL(s, { zone })),
+    O.filter((dt) => dt.isValid),
+    O.alt(() => O.fromNullable(DateTime.fromISO(s)))
+  );
