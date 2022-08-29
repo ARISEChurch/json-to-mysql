@@ -1,6 +1,6 @@
-import * as F from "fp-ts/function";
-import * as O from "fp-ts/Option";
-import * as Arr from "fp-ts/Array";
+import * as F from "fp-ts/lib/function";
+import * as O from "fp-ts/lib/Option";
+import * as Arr from "fp-ts/lib/Array";
 import * as Sql from "sqlstring";
 import { DateTime } from "luxon";
 
