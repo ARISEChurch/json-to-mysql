@@ -14,6 +14,17 @@ const firstSample = (key: string, rows: any[]) =>
     O.map((row) => row[key])
   );
 
+const hasLongText = (key: string, rows: any[]) =>
+  rows.some((row) => {
+    const val = row[key];
+
+    if (typeof val === "string") {
+      return val.length > 255;
+    }
+
+    return false;
+  });
+
 const mysqlType =
   ({ timeFields, dateFields }: Pick<SchemaOpts, "dateFields" | "timeFields">) =>
   (key: string) =>
@@ -68,6 +79,7 @@ export type SchemaKind =
   | "DATETIME"
   | "DATE"
   | "VARCHAR(255)"
+  | "TEXT"
   | "INT"
   | "BOOLEAN"
   | "JSON";
@@ -101,6 +113,12 @@ export const schema = ({
         firstSample(name, sampleSlice),
         O.map(getType(name)),
         O.filter((type) => type !== "JSON" || allowJson),
+        O.map(
+          (type): SchemaKind =>
+            type === "VARCHAR(255)" && hasLongText(name, sampleSlice)
+              ? "TEXT"
+              : "VARCHAR(255)"
+        ),
         O.fold(
           () => [],
           (kind) => [
