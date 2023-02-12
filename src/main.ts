@@ -14,16 +14,10 @@ const firstSample = (key: string, rows: any[]) =>
     O.map((row) => row[key])
   );
 
-const hasLongText = (key: string, rows: any[]) =>
-  rows.some((row) => {
-    const val = row[key];
+const maxLength = (key: string, rows: any[]) =>
+  Math.max(...rows.map((row) => row[key]?.length ?? 0));
 
-    if (typeof val === "string") {
-      return val.length > 255;
-    }
-
-    return false;
-  });
+const hasLongText = (key: string, rows: any[]) => maxLength(key, rows) > 255;
 
 const mysqlType =
   ({
@@ -54,6 +48,7 @@ export interface SchemaOpts {
   timeFields?: string[];
   dateFields?: string[];
   allowJson?: boolean;
+  setVarCharMaxLen?: boolean;
   rows: any[];
 }
 
@@ -82,7 +77,7 @@ function shuffle<T>(input: T[]) {
 export type SchemaKind =
   | "DATETIME"
   | "DATE"
-  | "VARCHAR(255)"
+  | `VARCHAR(${number})`
   | "TEXT"
   | "INT"
   | "BOOLEAN"
@@ -108,6 +103,7 @@ export const schema = ({
   timeFields = [],
   allowJson = false,
   timeZone = "UTC",
+  setVarCharMaxLen = false,
 }: SchemaOpts): Schema => {
   const sampleSlice = shuffle(rows).slice(0, samples);
   const columns = [...new Set(sampleSlice.flatMap((row) => Object.keys(row)))];
@@ -119,12 +115,17 @@ export const schema = ({
         firstSample(name, sampleSlice),
         O.map(getType(name)),
         O.filter((type) => type !== "JSON" || allowJson),
-        O.map(
-          (type): SchemaKind =>
-            type === "VARCHAR(255)" && hasLongText(name, sampleSlice)
-              ? "TEXT"
-              : type
-        ),
+        O.map((type): SchemaKind => {
+          if (type === "VARCHAR(255)") {
+            if (hasLongText(name, rows)) {
+              return "TEXT";
+            } else if (setVarCharMaxLen) {
+              return `VARCHAR(${maxLength(name, rows)})` as SchemaKind;
+            }
+          }
+
+          return type;
+        }),
         O.fold(
           () => [],
           (kind) => [
