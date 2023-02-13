@@ -1,23 +1,26 @@
 import * as F from "fp-ts/lib/function";
 import * as O from "fp-ts/lib/Option";
-import * as Arr from "fp-ts/lib/Array";
+import * as Arr from "fp-ts/lib/ReadonlyArray";
 import * as Sql from "sqlstring";
 import { DateTime } from "luxon";
 
-const isNullable = (key: string, rows: any[]) =>
+type Row = Record<string, any>;
+type Rows = ReadonlyArray<Row>;
+
+const isNullable = (key: string, rows: Rows) =>
   rows.some((row) => row[key] == null);
 
-const firstSample = (key: string, rows: any[]) =>
+const firstSample = (key: string, rows: Rows) =>
   F.pipe(
     rows,
     Arr.findFirst((row) => row[key] != null),
     O.map((row) => row[key])
   );
 
-const maxLength = (key: string, rows: any[]) =>
+const maxLength = (key: string, rows: Rows) =>
   Math.max(...rows.map((row) => row[key]?.length ?? 0));
 
-const hasLongText = (key: string, rows: any[]) => maxLength(key, rows) > 255;
+const hasLongText = (key: string, rows: Rows) => maxLength(key, rows) > 255;
 
 const mysqlType =
   ({
@@ -42,17 +45,17 @@ const mysqlType =
   };
 
 export interface SchemaOpts {
-  name: string;
-  samples?: number;
-  timeZone?: string;
-  timeFields?: string[];
-  dateFields?: string[];
-  allowJson?: boolean;
-  setVarCharMaxLen?: boolean;
-  rows: any[];
+  readonly name: string;
+  readonly samples?: number;
+  readonly timeZone?: string;
+  readonly timeFields?: ReadonlyArray<string>;
+  readonly dateFields?: ReadonlyArray<string>;
+  readonly allowJson?: boolean;
+  readonly setVarCharMaxLen?: boolean;
+  readonly rows: ReadonlyArray<Record<string, any>>;
 }
 
-function shuffle<T>(input: T[]) {
+function shuffle<T>(input: ReadonlyArray<T>): ReadonlyArray<T> {
   const array = [...input];
 
   let currentIndex = array.length,
@@ -161,7 +164,7 @@ export const createTable = ({ name, fields }: Schema) => {
   );
 };
 
-const valueForRow = (schema: Schema) => (row: any) => (field: SchemaField) => {
+const valueForRow = (schema: Schema) => (row: Row) => (field: SchemaField) => {
   const value = row[field.name];
 
   if (field.kind === "DATETIME") {
@@ -187,11 +190,11 @@ const valuesForRow = (schema: Schema) => {
   const getValue = valueForRow(schema);
   const placeholders = schema.fields.map(() => "?").join(", ");
 
-  return (row: any) =>
+  return (row: Row) =>
     Sql.format(`(${placeholders})`, schema.fields.map(getValue(row)));
 };
 
-export const insertMany = (schema: Schema) => (rows: any[]) => {
+export const insertMany = (schema: Schema) => (rows: Rows) => {
   const columns = schema.fields.map((f) => f.name);
   const values = rows.map(valuesForRow(schema));
 
